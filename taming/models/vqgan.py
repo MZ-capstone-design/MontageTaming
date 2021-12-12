@@ -17,7 +17,7 @@ class VQModel(pl.LightningModule):
         lossconfig,
         n_embed,
         embed_dim,
-        ckpt_path="/opt/ml/taming-transformers/pretrained_models/vqgan.1024.model.ckpt",
+        ckpt_path="/opt/ml/taming-transformers/pretrained_models/afiaka_vqgan.1024.model.ckpt",
         ignore_keys=[],
         image_key="image",
         colorize_nlabels=None,
