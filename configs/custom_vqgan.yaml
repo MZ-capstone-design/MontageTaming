@@ -25,7 +25,7 @@ model:
       params:
         disc_conditional: False
         disc_in_channels: 3
-        disc_start: 15000 # 1.5 epoch is 15000 steps when batch size is 12. 성욱: 20000, 준홍: 10000, 영진: 15000, 연주: 10000
+        disc_start: 10000 # 1.5 epoch is 15000 steps when batch size is 12. 성욱: 20000, 준홍: 10000, 영진: 15000, 연주: 10000
         disc_weight: 0.8 # 성욱, 준홍, 영진 0.8 / 연주 0.2
         codebook_weight: 1.0
     # lossconfig:
