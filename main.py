@@ -10,6 +10,7 @@ from pytorch_lightning import seed_everything
 from pytorch_lightning.trainer import Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint, Callback, LearningRateMonitor
 from pytorch_lightning.utilities.distributed import rank_zero_only
+import wandb
 
 from taming.data.utils import custom_collate
 
@@ -248,7 +249,7 @@ class ImageLogger(Callback):
 
     @rank_zero_only
     def _wandb(self, pl_module, images, batch_idx, split):
-        raise ValueError("No way wandb")
+        # raise ValueError("No way wandb")
         grids = dict()
         for k in images:
             grid = torchvision.utils.make_grid(images[k])
@@ -465,9 +466,12 @@ if __name__ == "__main__":
         # debugging (wrongly sized pudb ui)
         # thus prefer testtube for now
         default_logger_cfgs = {
+            # https://wandb.ai/cayush/pytorchlightning/reports/Use-Pytorch-Lightning-with-Weights-Biases--Vmlldzo2NjQ1Mw
             "wandb": {
                 "target": "pytorch_lightning.loggers.WandbLogger",
                 "params": {
+                    "project": "DALLE-Couture",
+                    "entity": "happyface-boostcamp",
                     "name": nowname,
                     "save_dir": logdir,
                     "offline": opt.debug,
@@ -482,7 +486,7 @@ if __name__ == "__main__":
                 },
             },
         }
-        default_logger_cfg = default_logger_cfgs["testtube"]
+        default_logger_cfg = default_logger_cfgs["wandb"]
         logger_cfg = lightning_config.logger or OmegaConf.create()
         logger_cfg = OmegaConf.merge(default_logger_cfg, logger_cfg)
         trainer_kwargs["logger"] = instantiate_from_config(logger_cfg)
