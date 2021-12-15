@@ -1,7 +1,7 @@
 model:
   base_learning_rate: 4.5e-6
   target: taming.models.vqgan.VQModel
-  ckpt_path: /opt/ml/taming-transformers/pretrained_models/ggangtong_vqgan_best.ckpt
+  # ckpt_path: /opt/ml/taming-transformers/pretrained_models/ggangtong_vqgan_best.ckpt
   params:
     embed_dim: 256
     # n_embed: 1024
