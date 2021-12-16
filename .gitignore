@@ -4,5 +4,4 @@
 *.pyc
 *.pth
 *.ckpt
-/img
-*.out
+wandb
