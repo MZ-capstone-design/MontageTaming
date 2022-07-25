@@ -12,6 +12,12 @@
 
 https://wandb.ai/kairess/DALLE-Couture?workspace=user-kairess
 
+## Dataset
+
+페르소나 기반의 가상 인물 몽타주 A persona-based virtual persona montage
+
+https://aihub.or.kr/aihubdata/data/view.do?&dataSetSn=618
+
 ## Config
 
 [configs/VQGAN_blue.yaml](configs/VQGAN_blue.yaml)
