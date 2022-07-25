@@ -1,3 +1,23 @@
+# VQGAN with Persona Montage Reconstruction
+
+### Input
+
+![](assets/inputs_gs-236105_e-000038_b-000000.png)
+
+### Reconstruction
+
+![](assets/reconstructions_gs-236105_e-000038_b-000000.png)
+
+### Wandb log
+
+https://wandb.ai/kairess/DALLE-Couture?workspace=user-kairess
+
+## Config
+
+[configs/VQGAN_blue.yaml](configs/VQGAN_blue.yaml)
+
+---
+
 # Taming Transformers for High-Resolution Image Synthesis
 ##### CVPR 2021 (Oral)
 ![teaser](assets/mountain.jpeg)

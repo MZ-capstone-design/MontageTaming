@@ -471,7 +471,7 @@ if __name__ == "__main__":
                 "target": "pytorch_lightning.loggers.WandbLogger",
                 "params": {
                     "project": "DALLE-Couture",
-                    "entity": "happyface-boostcamp",
+                    "entity": "kairess",
                     "name": nowname,
                     "save_dir": logdir,
                     "offline": opt.debug,
