@@ -1,0 +1,6 @@
+Traceback (most recent call last):
+  File "C:\Users\82102\Desktop\MontageTaming\taming-transformers\main.py", line 15, in <module>
+    from taming.data.utils import custom_collate
+  File "C:\Users\82102\Desktop\MontageTaming\taming-transformers\taming\data\utils.py", line 11, in <module>
+    from torch._six import string_classes
+ModuleNotFoundError: No module named 'torch._six'
