@@ -8,10 +8,11 @@ from pathlib import Path
 import numpy as np
 import torch
 from taming.data.helper_types import Annotation
-from torch._six import string_classes
 from torch.utils.data._utils.collate import np_str_obj_array_pattern, default_collate_err_msg_format
 from tqdm import tqdm
 
+# Define string_classes to avoid using torch._six
+string_classes = (str,)
 
 def unpack(path):
     if path.endswith("tar.gz"):
@@ -28,7 +29,6 @@ def unpack(path):
             "Unknown file extension: {}".format(os.path.splitext(path)[1])
         )
 
-
 def reporthook(bar):
     """tqdm progress bar for downloads."""
 
@@ -39,21 +39,17 @@ def reporthook(bar):
 
     return hook
 
-
 def get_root(name):
     base = "data/"
     root = os.path.join(base, name)
     os.makedirs(root, exist_ok=True)
     return root
 
-
 def is_prepared(root):
     return Path(root).joinpath(".ready").exists()
 
-
 def mark_prepared(root):
     Path(root).joinpath(".ready").touch()
-
 
 def prompt_download(file_, source, target_dir, content_dir=None):
     targetpath = os.path.join(target_dir, file_)
@@ -74,7 +70,6 @@ def prompt_download(file_, source, target_dir, content_dir=None):
         input("Press Enter when done...")
     return targetpath
 
-
 def download_url(file_, url, target_dir):
     targetpath = os.path.join(target_dir, file_)
     os.makedirs(target_dir, exist_ok=True)
@@ -84,14 +79,12 @@ def download_url(file_, url, target_dir):
         urllib.request.urlretrieve(url, targetpath, reporthook=reporthook(bar))
     return targetpath
 
-
 def download_urls(urls, target_dir):
     paths = dict()
     for fname, url in urls.items():
         outpath = download_url(fname, url, target_dir)
         paths[fname] = outpath
     return paths
-
 
 def quadratic_crop(x, bbox, alpha=1.0):
     """bbox is xmin, ymin, xmax, ymax"""
@@ -119,7 +112,6 @@ def quadratic_crop(x, bbox, alpha=1.0):
     xmin = int(center[0] - l / 2)
     ymin = int(center[1] - l / 2)
     return np.array(x[ymin : ymin + l, xmin : xmin + l, ...])
-
 
 def custom_collate(batch):
     r"""source: pytorch 1.9.0, only one modification to original code """
