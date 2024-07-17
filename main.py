@@ -15,11 +15,8 @@ import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, Callback
 from omegaconf import OmegaConf
 
-# Define custom_collate if needed (not provided in the given code)
 def custom_collate(batch):
-    # Define your custom collate function here if necessary
     return batch
-
 
 class DummyDataset(Dataset):
     def __init__(self, data):
@@ -84,9 +81,6 @@ class DataModuleFromConfig(pl.LightningDataModule):
             num_workers=self.num_workers,
             collate_fn=custom_collate,
         )
-    
-
-
 
 class SetupCallback(Callback):
     def __init__(self, resume, now, logdir, ckptdir, cfgdir, config, lightning_config):
@@ -101,7 +95,6 @@ class SetupCallback(Callback):
 
     def on_train_start(self, trainer, pl_module):
         if trainer.global_rank == 0:
-            # Create logdirs and save configs
             os.makedirs(self.logdir, exist_ok=True)
             os.makedirs(self.ckptdir, exist_ok=True)
             os.makedirs(self.cfgdir, exist_ok=True)
@@ -120,7 +113,6 @@ class SetupCallback(Callback):
             )
 
         else:
-            # ModelCheckpoint callback created log directory --- remove it
             if not self.resume and os.path.exists(self.logdir):
                 dst, name = os.path.split(self.logdir)
                 dst = os.path.join(dst, "child_runs", name)
@@ -130,7 +122,6 @@ class SetupCallback(Callback):
                 except FileNotFoundError:
                     pass
 
-
 class ImageLogger(Callback):
     def __init__(self, batch_frequency, max_images, clamp=True, increase_log_steps=True):
         super().__init__()
@@ -138,7 +129,6 @@ class ImageLogger(Callback):
         self.max_images = max_images
         self.logger_log_images = {
             pl.loggers.WandbLogger: self._wandb,
-            # pl.loggers.TestTubeLogger: self._testtube,  # TestTubeLogger is not supported in 1.0.8
         }
         self.log_steps = [2 ** n for n in range(int(np.log2(self.batch_freq)) + 1)]
         if not increase_log_steps:
@@ -152,26 +142,13 @@ class ImageLogger(Callback):
             grids[f"{split}/{k}"] = wandb.Image(grid)
         pl_module.logger.log(grids)
 
-    # def _testtube(self, pl_module, images, batch_idx, split):
-    #     for k in images:
-    #         grid = torch.utils.make_grid(images[k])
-    #         grid = (grid + 1.0) / 2.0  # -1,1 -> 0,1; c,h,w
-
-    #         tag = f"{split}/{k}"
-    #         pl_module.logger.experiment.add_image(tag, grid, global_step=pl_module.global_step)
-
     def log_local(self, save_dir, split, images, global_step, current_epoch, batch_idx):
         root = os.path.join(save_dir, "images", split)
         for k in images:
             grid = torch.utils.make_grid(images[k], nrow=4)
-
-            grid = (grid + 1.0) / 2.0  # -1,1 -> 0,1; c,h,w
-
-            # to numpy
+            grid = (grid + 1.0) / 2.0
             grid = grid.numpy()
-            grid = np.moveaxis(grid, 0, -1)  # c,h,w -> h,w,c
-
-            # to image
+            grid = np.moveaxis(grid, 0, -1)
             grid = (grid * 255).astype(np.uint8)
             filename = "{}_gs-{:06}_e-{:06}_b-{:06}.png".format(
                 k, global_step, current_epoch, batch_idx
@@ -210,7 +187,6 @@ class ImageLogger(Callback):
     def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx):
         self.log_img(pl_module, batch, batch_idx, split="val")
 
-
 def get_obj_from_str(string, reload=False):
     module, cls = string.rsplit(".", 1)
     if reload:
@@ -218,11 +194,8 @@ def get_obj_from_str(string, reload=False):
         importlib.reload(module_imp)
     return getattr(importlib.import_module(module, package=None), cls)
 
-
 def instantiate_from_config(config):
-    # Implement your instantiation logic here based on the config
     pass
-
 
 def get_parser(**parser_kwargs):
     def str2bool(v):
@@ -280,18 +253,21 @@ def get_parser(**parser_kwargs):
         nargs="?",
         help="disable test",
     )
-    parser.add_argument("-p", "--project", help="name of new or path to existing project")
     parser.add_argument(
-        "-d",
+        "-p",
+        "--project",
+        help="name of new or path to existing project",
+        type=str,
+        default="",
+    )
+    parser.add_argument(
         "--debug",
         type=str2bool,
         nargs="?",
         const=True,
         default=False,
-        help="enable post-mortem debugging",
     )
     parser.add_argument(
-        "-s",
         "--seed",
         type=int,
         default=23,
@@ -304,110 +280,69 @@ def get_parser(**parser_kwargs):
         default="",
         help="post-postfix for default name",
     )
-    parser.add_argument(
-        '--config',
-        help="config override",
-    )
-    parser.add_argument(
-        '--current_timestamp',
-        action='store_true',
-        help="project_name? True: --current_timestamp False: None"
-    )
     return parser
 
-def args_are_accepted(args, parent_parser):
-    from torchinfo import faulthandler
-    
-    # Create a new parser using the parent_parser
-    parser = argparse.ArgumentParser(parents=[parent_parser])
+def nondefault_trainer_args(opt):
+    parser = get_parser()
+    args = parser.parse_args([])
+    return sorted(
+        k for k in vars(args) if getattr(opt, k, None) != getattr(args, k, None)
+    )
 
-    # Parse the provided arguments
-    parsed_args = parser.parse_known_args(args)[0]
-
-    # Check if all arguments were successfully parsed
-    if parsed_args:
-        print("All arguments are accepted and valid.")
-    else:
-        print("Some arguments are not accepted.")
-
-    # Enable faulthandler
-    faulthandler.enable()
 if __name__ == "__main__":
     now = datetime.datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
     parser = get_parser()
-
-    # Parse the command-line arguments
     opt, unknown = parser.parse_known_args()
-    
     if opt.name and opt.resume:
-        raise ValueError(
-            "-n/--name and -r/--resume cannot be specified both."
-            "If you want to resume training in a new log folder, "
-            "use -n/--name in combination with --resume_from_checkpoint"
-        )
+        raise ValueError("Cannot specify both --name and --resume.")
     if opt.resume:
         if not os.path.exists(opt.resume):
-            raise ValueError("Cannot find {}".format(opt.resume))
-        if os.path.isfile(opt.resume):
-            paths = opt.resume.split("/")
-            idx = len(paths) - paths[::-1].index("logs") + 1
-            logdir = "/".join(paths[:idx])
-            ckpt = opt.resume
-        else:
-            assert os.path.isdir(opt.resume), opt.resume
-            logdir = opt.resume.rstrip("/")
-            ckpt = os.path.join(logdir, "checkpoints", "last.ckpt")
-
-        opt.resume_from_checkpoint = ckpt
-        base_configs = sorted(glob.glob(os.path.join(logdir, "configs/*.yaml")))
-        opt.base = base_configs + opt.base
-        _tmp = logdir.split("/")
-        nowname = _tmp[_tmp.index("logs") + 1]
+            raise ValueError("Cannot find the requested resume checkpoint")
+        logdir = opt.resume.rstrip("/")
+        opt.name = logdir.split("/")[-1]
     else:
-        if opt.name:
-            name = "_" + opt.name
-        elif opt.base:
-            cfg_fname = os.path.split(opt.base[0])[-1]
-            cfg_name = os.path.splitext(cfg_fname)[0]
-            name = "_" + cfg_name
-        else:
-            name = ""
-        nowname = now + name + opt.postfix
-        logdir = os.path.join("logs", nowname)
-
+        opt.name = now + opt.postfix
+        logdir = os.path.join(opt.project, opt.name)
     ckptdir = os.path.join(logdir, "checkpoints")
     cfgdir = os.path.join(logdir, "configs")
-    seed_everything(opt.seed)
-    
-    print(opt)  # Check the parsed command-line arguments
 
-    # Enable debugging if specified
-    if opt.debug:
-        import pdb, faulthandler
-        faulthandler.enable()
-        sys.excepthook = pdb.pm
-
-    # Check if both --name and --resume options are provided, which is not allowed
-    if opt.name and opt.resume:
-        raise ValueError("Should either run from scratch or resume from a logdir, not both.")
-
-    # Initialize seed for reproducibility
     seed_everything(opt.seed)
 
-    # Load base configuration files
-    configs = [OmegaConf.load(cfg) for cfg in opt.base]
-    cli = OmegaConf.from_dotlist(unknown)
-    config = OmegaConf.merge(*configs, cli)
-
-    # Extract Lightning configuration and trainer configuration
+    try:
+        configs = [OmegaConf.load(cfg) for cfg in opt.base]
+        cli = OmegaConf.from_dotlist(unknown)
+        config = OmegaConf.merge(*configs, cli)
+    except Exception:
+        configs = list()
+        cli = OmegaConf.from_dotlist(unknown)
+        config = OmegaConf.merge(*configs, cli)
     lightning_config = config.pop("lightning", OmegaConf.create())
     trainer_config = lightning_config.get("trainer", OmegaConf.create())
 
+    for k in nondefault_trainer_args(opt):
+        trainer_config[k] = getattr(opt, k)
+
+    trainer_opt = argparse.Namespace(**trainer_config)
+    trainer = pl.Trainer.from_argparse_args(trainer_opt)
     def nondefault_trainer_args(opt):
-        parser = argparse.ArgumentParser()
-        parser = pl.Trainer.add_argparse_args(parser)
+        parser = get_parser()
         args = parser.parse_args([])
-        return sorted(k for k in vars(args) if getattr(opt, k) != getattr(args, k))
+    
+    # Ensure both opt and args have the same set of attributes
+        opt_vars = vars(opt)
+        args_vars = vars(args)
+
+    # Set default None for any missing attributes
+        for key in set(opt_vars.keys()).union(args_vars.keys()):
+            if key not in opt_vars:
+                opt_vars[key] = None
+            if key not in args_vars:
+                args_vars[key] = None
+
+        return sorted(
+            k for k in args_vars if opt_vars[k] != args_vars[k]
+        )
+
 
     # Remove 'gpus' key from trainer_config if it exists
     if "gpus" in trainer_config:
