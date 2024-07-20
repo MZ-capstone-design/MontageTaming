@@ -7,7 +7,7 @@ import numpy as np
 from PIL import Image
 
 import torch
-from pytorch_lightning import seed_everything
+from pytorch_lightning import Trainer, seed_everything
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
 
@@ -394,10 +394,30 @@ if __name__ == "__main__":
     model = instantiate_from_config(config.model)
 
     # Initialize Trainer
+    # Define a set of valid keys for the Trainer class
+    valid_trainer_keys = {
+        "max_epochs", "min_epochs", "gpus", "auto_select_gpus", "tpu_cores",
+        "num_nodes", "log_gpu_memory", "progress_bar_refresh_rate", "overfit_batches",
+        "track_grad_norm", "check_val_every_n_epoch", "fast_dev_run", "accumulate_grad_batches",
+        "max_steps", "min_steps", "limit_train_batches", "limit_val_batches",
+        "limit_test_batches", "limit_predict_batches", "val_check_interval", "flush_logs_every_n_steps",
+        "log_every_n_steps", "accelerator", "sync_batchnorm", "precision", "weights_summary",
+        "weights_save_path", "num_sanity_val_steps", "truncated_bptt_steps", "resume_from_checkpoint",
+        "profiler", "benchmark", "deterministic", "reload_dataloaders_every_n_epochs",
+        "auto_lr_find", "replace_sampler_ddp", "terminate_on_nan", "auto_scale_batch_size",
+        "prepare_data_per_node", "plugins", "amp_backend", "amp_level", "distributed_backend",
+        "move_metrics_to_cpu", "multiple_trainloader_mode"
+    }   
+
+    # Filter the trainer_config dictionary to include only valid keys
+    filtered_trainer_config = {k: v for k, v in trainer_config.items() if k in valid_trainer_keys}
+
     trainer = Trainer(
+        max_epochs=10,
+        gpus=1 if torch.cuda.is_available() else 0,
         logger=trainer_kwargs.get("logger", None),
         callbacks=trainer_kwargs["callbacks"],
-        **trainer_config
+        **filtered_trainer_config
     )
 
     # Run training or testing based on command-line arguments

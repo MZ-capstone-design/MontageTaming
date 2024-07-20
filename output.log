@@ -1,7 +1,15 @@
 GPU available: False, used: False
 TPU available: False, using: 0 TPU cores
+GPU available: False, used: False
+TPU available: False, using: 0 TPU cores
 Traceback (most recent call last):
-  File "C:\Users\82102\Desktop\MontageTaming\taming-transformers\main.py", line 397, in <module>
-    trainer = Trainer(
-              ^^^^^^^
-NameError: name 'Trainer' is not defined. Did you mean: 'trainer'?
+  File "C:\Users\82102\Desktop\MontageTaming\taming-transformers\main.py", line 425, in <module>
+    trainer.fit(model, datamodule=data)
+  File "C:\Users\82102\AppData\Local\Programs\Python\Python312\Lib\site-packages\pytorch_lightning\trainer\trainer.py", line 416, in fit
+    self.train_loop.setup_fit(model, train_dataloader, val_dataloaders, datamodule)
+  File "C:\Users\82102\AppData\Local\Programs\Python\Python312\Lib\site-packages\pytorch_lightning\trainer\training_loop.py", line 102, in setup_fit
+    self.trainer.model_connector.copy_trainer_model_properties(model)
+  File "C:\Users\82102\AppData\Local\Programs\Python\Python312\Lib\site-packages\pytorch_lightning\trainer\connectors\model_connector.py", line 39, in copy_trainer_model_properties
+    m.trainer = self.trainer
+    ^^^^^^^^^
+AttributeError: 'NoneType' object has no attribute 'trainer'
