@@ -1,0 +1,10 @@
+setuptools>=45.0.0
+argparse
+omegaconf==2.0.0
+numpy==1.19.2
+Pillow
+torch==1.7.0
+torchvision==0.8.1
+pytorch-lightning==1.0.8
+wandb
+git+https://github.com/CompVis/taming-transformers.git

@@ -1,30 +1,108 @@
 import argparse
 import os
+import sys
 import datetime
 import glob
 import importlib
+from omegaconf import OmegaConf
 import numpy as np
 from PIL import Image
-
 import torch
-from pytorch_lightning import Trainer, seed_everything
-from torch.utils.data import DataLoader, Dataset
-from torchvision import transforms
-
+import torchvision
+from torch.utils.data import random_split, DataLoader, Dataset
 import pytorch_lightning as pl
-from pytorch_lightning.callbacks import ModelCheckpoint, Callback
-from omegaconf import OmegaConf
+from pytorch_lightning import seed_everything
+from pytorch_lightning.callbacks import ModelCheckpoint, Callback, LearningRateMonitor
+from pytorch_lightning import Trainer
+import wandb
+from pytorch_lightning.loggers import WandbLogger, TensorBoardLogger
+from pytorch_lightning.utilities import rank_zero_only
 
-def custom_collate(batch):
-    return batch
+from taming.data.utils import custom_collate
 
-class DummyDataset(Dataset):
-    def __init__(self, data):
-        self.data = data
+def get_obj_from_str(string, reload=False):
+    module, cls = string.rsplit(".", 1)
+    if reload:
+        module_imp = importlib.import_module(module)
+        importlib.reload(module_imp)
+    return getattr(importlib.import_module(module), cls)
+
+def get_parser(**parser_kwargs):
+    parser = argparse.ArgumentParser(**parser_kwargs)
     
+    def str2bool(v):
+        if isinstance(v, bool):
+            return v
+        if v.lower() in ("yes", "true", "t", "y", "1"):
+            return True
+        elif v.lower() in ("no", "false", "f", "n", "0"):
+            return False
+        else:
+            raise argparse.ArgumentTypeError("Boolean value expected.")
+
+    parser.add_argument(
+        "-n", "--name", type=str, default="", nargs="?", 
+        help="Postfix for logdir"
+    )
+    parser.add_argument(
+        "-r", "--resume", type=str, default="", nargs="?", 
+        help="Resume from logdir or checkpoint in logdir"
+    )
+    parser.add_argument(
+        "-b", "--base", nargs="*", metavar="base_config.yaml", 
+        help="Paths to base configs, loaded left-to-right. Parameters can be overwritten or added with command-line options of the form `--key value`.",
+        default=[]
+    )
+    parser.add_argument(
+        "-t", "--train", type=str2bool, const=True, default=False, nargs="?", 
+        help="Train"
+    )
+    parser.add_argument(
+        "--no-test", type=str2bool, const=True, default=False, nargs="?", 
+        help="Disable test"
+    )
+    parser.add_argument(
+        "-p", "--project", help="Name of new or path to existing project"
+    )
+    parser.add_argument(
+        "-d", "--debug", type=str2bool, nargs="?", const=True, default=False, 
+        help="Enable post-mortem debugging"
+    )
+    parser.add_argument(
+        "-s", "--seed", type=int, default=23, 
+        help="Seed for seed_everything"
+    )
+    parser.add_argument(
+        "-f", "--postfix", type=str, default="", 
+        help="Post-postfix for default name"
+    )
+    parser.add_argument(
+        "--gpus", type=int, default=0, 
+        help="Number of GPUs to use (default: 0)"
+    )
+
+    return parser
+
+def nondefault_trainer_args(opt):
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--gpus", type=int, default=0, help="Number of GPUs to use")
+    parser.add_argument("--distributed_backend", type=str, default="ddp", help="Distributed backend")
+    args = parser.parse_args([])
+    return sorted(k for k in vars(args) if getattr(opt, k) != getattr(args, k))
+
+def instantiate_from_config(config):
+    if "target" not in config:
+        raise KeyError("Expected key `target` to instantiate.")
+    return get_obj_from_str(config["target"])(**config.get("params", {}))
+
+class WrappedDataset(Dataset):
+    """Wraps an arbitrary object with __len__ and __getitem__ into a PyTorch dataset."""
+    def __init__(self, dataset):
+        self.data = dataset
+
     def __len__(self):
         return len(self.data)
-    
+
     def __getitem__(self, idx):
         return self.data[idx]
 
@@ -34,15 +112,12 @@ class DataModuleFromConfig(pl.LightningDataModule):
         self.batch_size = batch_size
         self.dataset_configs = dict()
         self.num_workers = num_workers if num_workers is not None else batch_size * 2
-        if train is not None:
+        if train:
             self.dataset_configs["train"] = train
-            self.train_dataloader = self._train_dataloader
-        if validation is not None:
+        if validation:
             self.dataset_configs["validation"] = validation
-            self.val_dataloader = self._val_dataloader
-        if test is not None:
+        if test:
             self.dataset_configs["test"] = test
-            self.test_dataloader = self._test_dataloader
         self.wrap = wrap
 
     def prepare_data(self):
@@ -50,36 +125,33 @@ class DataModuleFromConfig(pl.LightningDataModule):
             instantiate_from_config(data_cfg)
 
     def setup(self, stage=None):
-        self.datasets = dict(
-            (k, instantiate_from_config(self.dataset_configs[k])) for k in self.dataset_configs
-        )
+        self.datasets = {k: instantiate_from_config(cfg) for k, cfg in self.dataset_configs.items()}
         if self.wrap:
-            for k in self.datasets:
-                self.datasets[k] = WrappedDataset(self.datasets[k])
+            self.datasets = {k: WrappedDataset(v) for k, v in self.datasets.items()}
 
-    def _train_dataloader(self):
+    def train_dataloader(self):
         return DataLoader(
             self.datasets["train"],
             batch_size=self.batch_size,
             num_workers=self.num_workers,
             shuffle=True,
-            collate_fn=custom_collate,
+            collate_fn=custom_collate
         )
 
-    def _val_dataloader(self):
+    def val_dataloader(self):
         return DataLoader(
             self.datasets["validation"],
             batch_size=self.batch_size,
             num_workers=self.num_workers,
-            collate_fn=custom_collate,
+            collate_fn=custom_collate
         )
 
-    def _test_dataloader(self):
+    def test_dataloader(self):
         return DataLoader(
             self.datasets["test"],
             batch_size=self.batch_size,
             num_workers=self.num_workers,
-            collate_fn=custom_collate,
+            collate_fn=custom_collate
         )
 
 class SetupCallback(Callback):
@@ -93,7 +165,7 @@ class SetupCallback(Callback):
         self.config = config
         self.lightning_config = lightning_config
 
-    def on_train_start(self, trainer, pl_module):
+    def on_pretrain_routine_start(self, trainer, pl_module):
         if trainer.global_rank == 0:
             os.makedirs(self.logdir, exist_ok=True)
             os.makedirs(self.ckptdir, exist_ok=True)
@@ -102,25 +174,43 @@ class SetupCallback(Callback):
             print("Project config")
             print(self.config.pretty())
             OmegaConf.save(
-                self.config, os.path.join(self.cfgdir, "{}-project.yaml".format(self.now))
+                self.config, os.path.join(self.cfgdir, f"{self.now}-project.yaml")
             )
 
             print("Lightning config")
             print(self.lightning_config.pretty())
             OmegaConf.save(
                 OmegaConf.create({"lightning": self.lightning_config}),
-                os.path.join(self.cfgdir, "{}-lightning.yaml".format(self.now)),
+                os.path.join(self.cfgdir, f"{self.now}-lightning.yaml")
             )
+        elif not self.resume and os.path.exists(self.logdir):
+            dst = os.path.join(os.path.dirname(self.logdir), "child_runs", os.path.basename(self.logdir))
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            try:
+                os.rename(self.logdir, dst)
+            except FileNotFoundError:
+                pass
 
-        else:
-            if not self.resume and os.path.exists(self.logdir):
-                dst, name = os.path.split(self.logdir)
-                dst = os.path.join(dst, "child_runs", name)
-                os.makedirs(os.path.split(dst)[0], exist_ok=True)
-                try:
-                    os.rename(self.logdir, dst)
-                except FileNotFoundError:
-                    pass
+default_logger_cfgs = {
+    "wandb": {
+        "target": "pytorch_lightning.loggers.WandbLogger",
+        "params": {
+            "project": "DALLE-Couture",
+            "entity": "kairess",
+            "name": None,  # Placeholder, set in the main block
+            "save_dir": None,  # Placeholder, set in the main block
+            "offline": None,  # Placeholder, set in the main block
+            "id": None,  # Placeholder, set in the main block
+        },
+    },
+    "tensorboard": {
+        "target": "pytorch_lightning.loggers.TensorBoardLogger",
+        "params": {
+            "save_dir": None,  # Placeholder, set in the main block
+            "name": "tensorboard",
+        },
+    },
+}
 
 class ImageLogger(Callback):
     def __init__(self, batch_frequency, max_images, clamp=True, increase_log_steps=True):
@@ -128,300 +218,229 @@ class ImageLogger(Callback):
         self.batch_freq = batch_frequency
         self.max_images = max_images
         self.logger_log_images = {
-            pl.loggers.WandbLogger: self._wandb,
+            WandbLogger: self._wandb,
+            TensorBoardLogger: self._tensorboard,
         }
         self.log_steps = [2 ** n for n in range(int(np.log2(self.batch_freq)) + 1)]
         if not increase_log_steps:
             self.log_steps = [self.batch_freq]
         self.clamp = clamp
 
+    @rank_zero_only
     def _wandb(self, pl_module, images, batch_idx, split):
-        grids = dict()
-        for k in images:
-            grid = torch.utils.make_grid(images[k])
-            grids[f"{split}/{k}"] = wandb.Image(grid)
-        pl_module.logger.log(grids)
+        grids = {f"{split}/{k}": wandb.Image(torchvision.utils.make_grid(v)) for k, v in images.items()}
+        pl_module.logger.experiment.log(grids)
 
-    def log_local(self, save_dir, split, images, global_step, current_epoch, batch_idx):
-        root = os.path.join(save_dir, "images", split)
-        for k in images:
-            grid = torch.utils.make_grid(images[k], nrow=4)
-            grid = (grid + 1.0) / 2.0
-            grid = grid.numpy()
-            grid = np.moveaxis(grid, 0, -1)
-            grid = (grid * 255).astype(np.uint8)
-            filename = "{}_gs-{:06}_e-{:06}_b-{:06}.png".format(
-                k, global_step, current_epoch, batch_idx
+    @rank_zero_only
+    def _tensorboard(self, pl_module, images, batch_idx, split):
+        for k, v in images.items():
+            grid = torchvision.utils.make_grid(v)
+            grid = (grid + 1.0) / 2.0  # -1,1 -> 0,1; c,h,w
+            tag = f"{split}/{k}"
+            pl_module.logger.experiment.add_image(tag, grid, global_step=pl_module.global_step)
+
+def run_experiment(config, lightning_config, args, opt):
+    seed_everything(config.seed, workers=True)
+    pl.seed_everything(config.seed, workers=True)
+    data_module = DataModuleFromConfig(**config.data)
+
+    trainer_args = {
+        "max_epochs": config.training.max_epochs,
+        "log_every_n_steps": config.training.log_every_n_steps,
+        "accumulate_grad_batches": config.training.accumulate_grad_batches,
+        "callbacks": [],
+        "precision": config.training.precision,
+        "default_root_dir": opt.logdir,
+        "resume_from_checkpoint": opt.resume,
+        "gpus": config.training.gpus,
+        "distributed_backend": config.training.distributed_backend,
+    }
+
+    if opt.resume:
+        trainer_args["resume_from_checkpoint"] = opt.resume
+
+    if nondefault_trainer_args(opt):
+        print("Warning: Detected non-default trainer args")
+        print(nondefault_trainer_args(opt))
+
+    if config.callbacks:
+        trainer_args["callbacks"] += [get_obj_from_str(cb["target"])(**cb.get("params", {})) for cb in config.callbacks]
+
+    if config.loggers:
+        loggers = [get_obj_from_str(logger["target"])(**logger.get("params", {})) for logger in config.loggers]
+        trainer_args["logger"] = loggers[0] if len(loggers) == 1 else loggers
+
+    trainer = Trainer(**trainer_args)
+
+    if not config.callbacks:
+        trainer.callbacks.append(
+            SetupCallback(
+                resume=opt.resume,
+                now=opt.now,
+                logdir=opt.logdir,
+                ckptdir=opt.ckptdir,
+                cfgdir=opt.cfgdir,
+                config=config,
+                lightning_config=lightning_config,
             )
-            path = os.path.join(root, filename)
-            os.makedirs(os.path.split(path)[0], exist_ok=True)
-            Image.fromarray(grid).save(path)
+        )
 
-    def log_img(self, pl_module, batch, batch_idx, split="train"):
-        if hasattr(pl_module, "log_images") and callable(pl_module.log_images) and (
-            batch_idx % self.batch_freq == 0 and batch_idx > 0
-            or batch_idx in self.log_steps
-            or (split == "val" and batch_idx == 0)
-        ):
-            logger = type(pl_module.logger)
-            is_train = pl_module.training
-            if is_train:
-                pl_module.eval()
-            with torch.no_grad():
-                images = pl_module.log_images(batch, split=split)
-            for k in images:
-                N = min(images[k].shape[0], self.max_images)
-                images[k] = images[k][:N]
-                if self.clamp:
-                    images[k] = torch.clamp(images[k], -1.0, 1.0)
-            self.logger_log_images[logger](pl_module, images, batch_idx, split)
-            self.log_local(
-                pl_module.logger.save_dir, split, images, pl_module.global_step, pl_module.current_epoch, batch_idx
+    if not opt.no_test and "test" in config.training and config.training.test.get("log_images"):
+        trainer.callbacks.append(
+            ImageLogger(
+                batch_frequency=config.training.test.log_images.batch_frequency,
+                max_images=config.training.test.log_images.max_images,
+                clamp=config.training.test.log_images.clamp,
             )
-            if is_train:
-                pl_module.train()
+        )
 
-    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx):
-        self.log_img(pl_module, batch, batch_idx, split="train")
+    if opt.train:
+        trainer.fit(pl_module, datamodule=data_module)
 
-    def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx):
-        self.log_img(pl_module, batch, batch_idx, split="val")
-
-def get_obj_from_str(string, reload=False):
-    module, cls = string.rsplit(".", 1)
-    if reload:
-        module_imp = importlib.import_module(module)
-        importlib.reload(module_imp)
-    return getattr(importlib.import_module(module, package=None), cls)
-
-def instantiate_from_config(config):
-    pass
-
-def get_parser(**parser_kwargs):
-    def str2bool(v):
-        if isinstance(v, bool):
-            return v
-        if v.lower() in ("yes", "true", "t", "y", "1"):
-            return True
-        elif v.lower() in ("no", "false", "f", "n", "0"):
-            return False
-        else:
-            raise argparse.ArgumentTypeError("Boolean value expected.")
-
-    parser = argparse.ArgumentParser(**parser_kwargs)
-    parser.add_argument(
-        "-n",
-        "--name",
-        type=str,
-        const=True,
-        default="",
-        nargs="?",
-        help="postfix for logdir",
-    )
-    parser.add_argument(
-        "-r",
-        "--resume",
-        type=str,
-        const=True,
-        default="",
-        nargs="?",
-        help="resume from logdir or checkpoint in logdir",
-    )
-    parser.add_argument(
-        "-b",
-        "--base",
-        nargs="*",
-        metavar="base_config.yaml",
-        help="paths to base configs. Loaded from left-to-right. "
-        "Parameters can be overwritten or added with command-line options of the form `--key value`.",
-        default=list(),
-    )
-    parser.add_argument(
-        "-t",
-        "--train",
-        type=str2bool,
-        const=True,
-        default=False,
-        nargs="?",
-        help="train",
-    )
-    parser.add_argument(
-        "--no-test",
-        type=str2bool,
-        const=True,
-        default=False,
-        nargs="?",
-        help="disable test",
-    )
-    parser.add_argument(
-        "-p",
-        "--project",
-        help="name of new or path to existing project",
-        type=str,
-        default="",
-    )
-    parser.add_argument(
-        "--debug",
-        type=str2bool,
-        nargs="?",
-        const=True,
-        default=False,
-    )
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=23,
-        help="seed for seed_everything",
-    )
-    parser.add_argument(
-        "-f",
-        "--postfix",
-        type=str,
-        default="",
-        help="post-postfix for default name",
-    )
-    return parser
-
-def nondefault_trainer_args(opt):
-    parser = get_parser()
-    args = parser.parse_args([])
-    return sorted(
-        k for k in vars(args) if getattr(opt, k, None) != getattr(args, k, None)
-    )
+    if not opt.no_test:
+        trainer.test(pl_module, datamodule=data_module)
 
 if __name__ == "__main__":
     now = datetime.datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
+    sys.path.append(os.getcwd())
+
     parser = get_parser()
+    parser = Trainer.add_argparse_args(parser)
+
     opt, unknown = parser.parse_known_args()
+
     if opt.name and opt.resume:
-        raise ValueError("Cannot specify both --name and --resume.")
+        raise ValueError(
+            "-n/--name and -r/--resume cannot be specified both. "
+            "If you want to resume training in a new log folder, use -n/--name in combination with --resume_from_checkpoint."
+        )
+    
     if opt.resume:
         if not os.path.exists(opt.resume):
-            raise ValueError("Cannot find the requested resume checkpoint")
-        logdir = opt.resume.rstrip("/")
-        opt.name = logdir.split("/")[-1]
+            raise ValueError(f"Cannot find {opt.resume}")
+        if os.path.isfile(opt.resume):
+            paths = opt.resume.split("/")
+            idx = len(paths) - paths[::-1].index("logs") + 1
+            logdir = "/".join(paths[:idx])
+            ckpt = opt.resume
+        else:
+            assert os.path.isdir(opt.resume), opt.resume
+            logdir = opt.resume.rstrip("/")
+            ckpt = os.path.join(logdir, "checkpoints", "last.ckpt")
+
+        opt.resume_from_checkpoint = ckpt
+        base_configs = sorted(glob.glob(os.path.join(logdir, "configs/*.yaml")))
+        opt.base = base_configs + opt.base
+        nowname = logdir.split("/")[logdir.split("/").index("logs") + 1]
     else:
-        opt.name = now + opt.postfix
-        logdir = os.path.join(opt.project, opt.name)
+        name = f"_{opt.name}" if opt.name else f"_{os.path.splitext(os.path.basename(opt.base[0]))[0]}" if opt.base else ""
+        nowname = now + name + opt.postfix
+        logdir = os.path.join("logs", nowname)
+
     ckptdir = os.path.join(logdir, "checkpoints")
     cfgdir = os.path.join(logdir, "configs")
-
     seed_everything(opt.seed)
 
     try:
         configs = [OmegaConf.load(cfg) for cfg in opt.base]
         cli = OmegaConf.from_dotlist(unknown)
         config = OmegaConf.merge(*configs, cli)
-    except Exception:
-        configs = list()
-        cli = OmegaConf.from_dotlist(unknown)
-        config = OmegaConf.merge(*configs, cli)
-    lightning_config = config.pop("lightning", OmegaConf.create())
-    trainer_config = lightning_config.get("trainer", OmegaConf.create())
+        lightning_config = config.pop("lightning", OmegaConf.create())
+        trainer_config = lightning_config.get("trainer", OmegaConf.create())
+        trainer_config["distributed_backend"] = "ddp"
+        for k in nondefault_trainer_args(opt):
+            trainer_config[k] = getattr(opt, k)
+        if "gpus" not in trainer_config:
+            del trainer_config["distributed_backend"]
+            cpu = True
+        else:
+            gpuinfo = trainer_config["gpus"]
+            print(f"Running on GPUs {gpuinfo}")
+            cpu = False
+        trainer_opt = argparse.Namespace(**trainer_config)
+        lightning_config.trainer = trainer_config
 
-    for k in nondefault_trainer_args(opt):
-        trainer_config[k] = getattr(opt, k)
+        model = instantiate_from_config(config.model)
 
-    trainer_opt = argparse.Namespace(**trainer_config)
-    trainer = pl.Trainer.from_argparse_args(trainer_opt)
-    def nondefault_trainer_args(opt):
-        parser = get_parser()
-        args = parser.parse_args([])
-    
-    # Ensure both opt and args have the same set of attributes
-        opt_vars = vars(opt)
-        args_vars = vars(args)
+        default_logger_cfg = {
+            "wandb": {
+                "target": "pytorch_lightning.loggers.WandbLogger",
+                "params": {
+                    "project": "DALLE-Couture",
+                    "entity": "kairess",
+                    "name": nowname,
+                    "save_dir": logdir,
+                    "offline": opt.debug,
+                    "id": nowname,
+                },
+            }
+        }
+        logger_cfg = lightning_config.logger or OmegaConf.create()
+        logger_cfg = OmegaConf.merge(default_logger_cfg["wandb"], logger_cfg)
+        trainer_kwargs = {"logger": instantiate_from_config(logger_cfg)}
 
-    # Set default None for any missing attributes
-        for key in set(opt_vars.keys()).union(args_vars.keys()):
-            if key not in opt_vars:
-                opt_vars[key] = None
-            if key not in args_vars:
-                args_vars[key] = None
+        default_modelckpt_cfg = {
+            "target": "pytorch_lightning.callbacks.ModelCheckpoint",
+            "params": {
+                "dirpath": ckptdir,
+                "filename": "{epoch:06}",
+                "verbose": True,
+                "save_last": True,
+            },
+        }
+        if hasattr(model, "monitor"):
+            print(f"Monitoring {model.monitor} as checkpoint metric.")
+            default_modelckpt_cfg["params"]["monitor"] = model.monitor
+            default_modelckpt_cfg["params"]["save_top_k"] = 3
 
-        return sorted(
-            k for k in args_vars if opt_vars[k] != args_vars[k]
+        modelckpt_cfg = lightning_config.modelcheckpoint or OmegaConf.create()
+        modelckpt_cfg = OmegaConf.merge(default_modelckpt_cfg, modelckpt_cfg)
+        trainer_kwargs["checkpoint_callback"] = instantiate_from_config(modelckpt_cfg)
+
+        default_callbacks_cfg = {
+            "setup_callback": {
+                "target": "main.SetupCallback",
+                "params": {
+                    "resume": opt.resume,
+                    "now": now,
+                    "logdir": logdir,
+                    "ckptdir": ckptdir,
+                    "cfgdir": cfgdir,
+                    "config": config,
+                    "lightning_config": lightning_config,
+                },
+            },
+            "image_logger": {
+                "target": "main.ImageLogger",
+                "params": {"batch_frequency": 750, "max_images": 4, "clamp": True},
+            },
+            "learning_rate_logger": {
+                "target": "pytorch_lightning.callbacks.LearningRateMonitor",
+                "params": {"logging_interval": "step"},
+            },
+        }
+        callbacks_cfg = lightning_config.callbacks or OmegaConf.create()
+        callbacks_cfg = OmegaConf.merge(default_callbacks_cfg, callbacks_cfg)
+        trainer_kwargs["callbacks"] = [instantiate_from_config(callbacks_cfg[k]) for k in callbacks_cfg]
+
+        trainer = Trainer.from_argparse_args(trainer_opt, **trainer_kwargs)
+
+        data = instantiate_from_config(config.data)
+        data.prepare_data()
+        data.setup()
+
+        bs, base_lr = config.data.params.batch_size, config.model.base_learning_rate
+        ngpu = len(lightning_config.trainer.gpus.strip(",").split(",")) if not cpu else 1
+        accumulate_grad_batches = lightning_config.trainer.accumulate_grad_batches
+        assert accumulate_grad_batches > 0, "Please set accumulate_grad_batches in the config file or command-line arguments."
+        if "distributed_backend" in trainer_opt:
+            accumulate_grad_batches *= ngpu
+        model.configure_optimizers(
+            base_lr=base_lr, bs=bs, accumulate_grad_batches=accumulate_grad_batches
         )
 
+        trainer.fit(model, data)
 
-    # Remove 'gpus' key from trainer_config if it exists
-    if "gpus" in trainer_config:
-        del trainer_config["gpus"]
-
-    # Update trainer_config with non-default arguments from opt
-    for k in nondefault_trainer_args(opt):
-        trainer_config[k] = getattr(opt, k)
-
-    # Set default_root_dir in trainer_config if not already set
-    if "default_root_dir" not in trainer_config:
-        trainer_config["default_root_dir"] = None  # Set your default root directory here
-
-    # Set up checkpoint and logger configurations
-    trainer_kwargs = {}
-
-    # Set up logger
-    if "logger" in lightning_config:
-        trainer_kwargs["logger"] = instantiate_from_config(lightning_config.logger)
-
-    # Default ModelCheckpoint callback
-    default_checkpoint_callback = ModelCheckpoint(
-        dirpath=None,  # Set your checkpoint directory here
-        filename="{epoch}-{val_loss:.2f}",  # Set your checkpoint filename format here
-        monitor="val_loss",
-        mode="min",
-        save_top_k=-1,
-    )
-
-    if "modelcheckpoint" in lightning_config:
-        default_checkpoint_callback = instantiate_from_config(lightning_config.modelcheckpoint)
-
-    # Set up callbacks
-    trainer_kwargs["callbacks"] = [
-        SetupCallback(opt.resume, now, logdir=None, ckptdir=None, cfgdir=None, config=config, lightning_config=lightning_config),
-        default_checkpoint_callback
-    ]
-
-    if "callbacks" in lightning_config:
-        trainer_kwargs["callbacks"] += [
-            instantiate_from_config(callback_conf)
-            for callback_conf in lightning_config.callbacks.values()
-        ]
-
-    # Initialize DataModule
-    data = instantiate_from_config(config.data)
-
-    # Initialize Model
-    model = instantiate_from_config(config.model)
-
-    # Initialize Trainer
-    # Define a set of valid keys for the Trainer class
-    valid_trainer_keys = {
-        "max_epochs", "min_epochs", "gpus", "auto_select_gpus", "tpu_cores",
-        "num_nodes", "log_gpu_memory", "progress_bar_refresh_rate", "overfit_batches",
-        "track_grad_norm", "check_val_every_n_epoch", "fast_dev_run", "accumulate_grad_batches",
-        "max_steps", "min_steps", "limit_train_batches", "limit_val_batches",
-        "limit_test_batches", "limit_predict_batches", "val_check_interval", "flush_logs_every_n_steps",
-        "log_every_n_steps", "accelerator", "sync_batchnorm", "precision", "weights_summary",
-        "weights_save_path", "num_sanity_val_steps", "truncated_bptt_steps", "resume_from_checkpoint",
-        "profiler", "benchmark", "deterministic", "reload_dataloaders_every_n_epochs",
-        "auto_lr_find", "replace_sampler_ddp", "terminate_on_nan", "auto_scale_batch_size",
-        "prepare_data_per_node", "plugins", "amp_backend", "amp_level", "distributed_backend",
-        "move_metrics_to_cpu", "multiple_trainloader_mode"
-    }   
-
-    # Filter the trainer_config dictionary to include only valid keys
-    filtered_trainer_config = {k: v for k, v in trainer_config.items() if k in valid_trainer_keys}
-
-    trainer = Trainer(
-        max_epochs=10,
-        gpus=1 if torch.cuda.is_available() else 0,
-        logger=trainer_kwargs.get("logger", None),
-        callbacks=trainer_kwargs["callbacks"],
-        **filtered_trainer_config
-    )
-
-    # Run training or testing based on command-line arguments
-    if opt.train:
-        trainer.fit(model, datamodule=data)
-    elif not opt.no_test:
-        trainer.test(model, datamodule=data)
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        raise
