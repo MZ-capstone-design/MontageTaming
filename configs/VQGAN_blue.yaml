@@ -45,5 +45,4 @@ data:
       params:
         test_images_list_file: r'D:\dataset\image_list_test.txt'
         size: 256
--gpus: null
--0,: null
+-gpus: 1
