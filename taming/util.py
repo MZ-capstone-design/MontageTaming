@@ -24,7 +24,8 @@ def download(url, local_path, chunk_size=1024):
                 for data in r.iter_content(chunk_size=chunk_size):
                     if data:
                         f.write(data)
-                        pbar.update(chunk_size)
+                        pbar.update(len(data))
+
 
 
 def md5_hash(path):

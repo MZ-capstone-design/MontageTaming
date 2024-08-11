@@ -7,4 +7,3 @@ torch==1.7.0
 torchvision==0.8.1
 pytorch-lightning==1.0.8
 wandb
-git+https://github.com/CompVis/taming-transformers.git

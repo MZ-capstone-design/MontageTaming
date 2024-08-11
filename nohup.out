@@ -1,4 +1,0 @@
-Traceback (most recent call last):
-  File "C:\Users\82102\desktop\MontageTaming\taming-transformers\main.py", line 2, in <module>
-    from omegaconf import OmegaConf
-ModuleNotFoundError: No module named 'omegaconf'
